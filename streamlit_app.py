@@ -75,6 +75,34 @@ st.markdown("""
       background: #fffbeb; border: 2px solid #f59e0b; padding: 1.25rem;
       margin-top: 1rem; border-radius: 8px; color: #92400e;
     }
+    button[kind="primary"] {
+      background: #2563eb !important;
+      border: 1px solid #2563eb !important;
+      color: #ffffff !important;
+    }
+    button[kind="primary"]:hover {
+      background: #1d4ed8 !important;
+      border-color: #1d4ed8 !important;
+      color: #ffffff !important;
+    }
+    button[kind="primary"]:focus,
+    button[kind="primary"]:focus-visible {
+      box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25) !important;
+    }
+    button[kind="secondary"] {
+      background: #f9a8d4 !important;
+      border: 1px solid #f472b6 !important;
+      color: #831843 !important;
+    }
+    button[kind="secondary"]:hover {
+      background: #ef4444 !important;
+      border-color: #dc2626 !important;
+      color: #ffffff !important;
+    }
+    button[kind="secondary"]:focus,
+    button[kind="secondary"]:focus-visible {
+      box-shadow: 0 0 0 0.2rem rgba(244, 114, 182, 0.25) !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -97,6 +125,10 @@ def artifact_download_url(run_id: str, artifact_key: str) -> str:
 def artifact_label(artifact_key: str, artifact_path: str) -> str:
     filename = os.path.basename(artifact_path) or artifact_key
     return f"{artifact_key.replace('_', ' ').title()} ({filename})"
+
+
+def artifact_filename(artifact_path: str) -> str:
+    return os.path.basename(artifact_path) or artifact_path
 
 def stage_has_result(stage_id: str, run: dict, detail: dict) -> bool:
     """Explicit check to prevent graying out after approval"""
@@ -204,7 +236,7 @@ if run_id:
                 left, right = st.columns([3, 1])
                 with left:
                     st.markdown(f"**{artifact_label(artifact_key, artifact_path)}**")
-                    st.caption(artifact_path)
+                    st.caption(artifact_filename(artifact_path))
                 with right:
                     st.link_button(
                         "Download",
