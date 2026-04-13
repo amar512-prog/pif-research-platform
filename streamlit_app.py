@@ -1,13 +1,37 @@
 import html
 import os
 import json
+from urllib.parse import quote
 import requests
 import streamlit as st
 from typing import Any
 
 # 1. CONSTANTS & API CONFIG
-API_BASE_URL = os.environ.get("PIF_RA_API_BASE_URL", "http://127.0.0.1:8000")
-API_TIMEOUT_SECONDS = int(os.environ.get("PIF_RA_API_TIMEOUT_SECONDS", "180"))
+
+
+def _secret_or_env(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value:
+        return value
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+        api_section = st.secrets.get("api")
+        if isinstance(api_section, dict):
+            section_key_map = {
+                "PIF_RA_API_BASE_URL": "base_url",
+                "PIF_RA_API_TIMEOUT_SECONDS": "timeout_seconds",
+            }
+            section_key = section_key_map.get(name)
+            if section_key and section_key in api_section:
+                return str(api_section[section_key])
+    except Exception:
+        pass
+    return default
+
+
+API_BASE_URL = _secret_or_env("PIF_RA_API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+API_TIMEOUT_SECONDS = int(_secret_or_env("PIF_RA_API_TIMEOUT_SECONDS", "180"))
 
 STAGES = [
     {"id": "config", "label": "Config", "description": "Topic and output settings"},
@@ -64,6 +88,15 @@ def api_post(path: str, payload: dict):
     response = requests.post(f"{API_BASE_URL}{path}", json=payload, timeout=API_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
+
+
+def artifact_download_url(run_id: str, artifact_key: str) -> str:
+    return f"{API_BASE_URL}/runs/{quote(run_id)}/artifacts/{quote(artifact_key)}"
+
+
+def artifact_label(artifact_key: str, artifact_path: str) -> str:
+    filename = os.path.basename(artifact_path) or artifact_key
+    return f"{artifact_key.replace('_', ' ').title()} ({filename})"
 
 def stage_has_result(stage_id: str, run: dict, detail: dict) -> bool:
     """Explicit check to prevent graying out after approval"""
@@ -162,4 +195,20 @@ if run_id:
                     if b2.form_submit_button("❌ Revise", use_container_width=True):
                         api_post(f"/runs/{run_id}/checkpoint", {"checkpoint_id": checkpoint, "decision": "revise", "feedback": fb})
                         st.rerun()
+
+        if run.get("status") == "completed" and run.get("artifact_paths"):
+            st.divider()
+            st.subheader("Download Artifacts")
+            st.caption("Final run outputs are available below.")
+            for artifact_key, artifact_path in run["artifact_paths"].items():
+                left, right = st.columns([3, 1])
+                with left:
+                    st.markdown(f"**{artifact_label(artifact_key, artifact_path)}**")
+                    st.caption(artifact_path)
+                with right:
+                    st.link_button(
+                        "Download",
+                        artifact_download_url(run_id, artifact_key),
+                        use_container_width=True,
+                    )
     except Exception as e: st.error(f"Sync error: {e}")

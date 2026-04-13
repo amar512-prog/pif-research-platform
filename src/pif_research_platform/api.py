@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from .models import CheckpointSubmission, RunCreateRequest, RunSummary, SerializedRunState, StageRestartRequest
 from .service import RunService, build_default_service
@@ -30,6 +33,25 @@ def create_app(service: RunService | None = None) -> FastAPI:
             return run_service.get_run_detail(run_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/runs/{run_id}/artifacts/{artifact_key}")
+    def download_artifact(run_id: str, artifact_key: str) -> FileResponse:
+        try:
+            state = run_service.get_run_detail(run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        artifact_path = state.artifact_paths.get(artifact_key)
+        if not artifact_path:
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_key}' not found for run '{run_id}'")
+        path = Path(artifact_path).resolve()
+        run_dir = run_service.repo.run_dir(run_id).resolve()
+        try:
+            path.relative_to(run_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Artifact path is outside the run directory") from exc
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail=f"Artifact file missing for key '{artifact_key}'")
+        return FileResponse(path, filename=path.name)
 
     @app.post("/runs/{run_id}/checkpoint", response_model=RunSummary)
     def submit_checkpoint(run_id: str, submission: CheckpointSubmission) -> RunSummary:

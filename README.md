@@ -32,6 +32,85 @@ To make imports work cleanly from the environment:
 ./.conda-env/bin/pip install -r requirements.txt
 ```
 
+## Docker Quick Start
+
+For local testing of both the FastAPI backend and the Streamlit frontend together:
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- API: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
+- Streamlit UI: `http://localhost:8501`
+- Ollama API: `http://localhost:11434`
+
+The default Docker mode now includes an `ollama` container. The API is configured with:
+
+- `PIF_LOCAL_LLM_PROVIDER=auto`
+- `PIF_LOCAL_LLM_BASE_URL=http://ollama:11434`
+- `PIF_LOCAL_LLM_FALLBACK=template`
+- `PIF_SEARCH_PROVIDER=offline`
+
+That means the stack still boots cleanly before any model is downloaded:
+
+- if the Ollama model is present, the API uses it
+- if the model is not present yet, the API falls back to template mode
+
+### Pull The Ollama Model In Docker
+
+To download the configured model into the Docker-managed Ollama volume:
+
+```bash
+docker compose --profile init up ollama-pull
+```
+
+After that, start or restart the main stack:
+
+```bash
+docker compose up --build
+```
+
+You can also pull the model manually:
+
+```bash
+docker compose exec ollama ollama pull qwen3:14b
+```
+
+To check what models are available:
+
+```bash
+docker compose exec ollama ollama list
+```
+
+### Docker With Local Ollama
+
+If you want the containers to use Ollama, you have two options.
+
+Use Ollama running on your host machine:
+
+```bash
+PIF_LOCAL_LLM_PROVIDER=ollama \
+PIF_LOCAL_LLM_BASE_URL=http://host.docker.internal:11434 \
+docker compose up --build
+```
+
+Or use the included Ollama container:
+
+```bash
+docker compose --profile init up ollama-pull
+PIF_LOCAL_LLM_PROVIDER=ollama docker compose up --build
+```
+
+### Docker Notes
+
+- The compose file bind-mounts the project into `/app`, so code changes are reflected directly in the containers.
+- Run artifacts still persist to the local project directory under `runs/` and `research_runs.db`.
+- The Streamlit container talks to the API container using `http://api:8000`, so no extra frontend config is needed for local Docker testing.
+- The Ollama model cache is stored in the named Docker volume `ollama_data`.
+
 
 ## Local LLM Runtime
 

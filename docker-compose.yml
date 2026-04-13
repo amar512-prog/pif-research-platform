@@ -1,0 +1,108 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "pif_research_platform.api:app",
+        "--app-dir",
+        "src",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ]
+    environment:
+      PYTHONPATH: /app/src
+      PIF_LOCAL_LLM_PROVIDER: ${PIF_LOCAL_LLM_PROVIDER:-auto}
+      PIF_LOCAL_LLM_BASE_URL: ${PIF_LOCAL_LLM_BASE_URL:-http://ollama:11434}
+      PIF_LOCAL_LLM_MODEL: ${PIF_LOCAL_LLM_MODEL:-qwen3:14b}
+      PIF_LOCAL_LLM_MAX_GB: ${PIF_LOCAL_LLM_MAX_GB:-12}
+      PIF_LOCAL_LLM_READ_TIMEOUT: ${PIF_LOCAL_LLM_READ_TIMEOUT:-90}
+      PIF_LOCAL_LLM_FALLBACK: ${PIF_LOCAL_LLM_FALLBACK:-template}
+      PIF_SEARCH_PROVIDER: ${PIF_SEARCH_PROVIDER:-offline}
+      PIF_SEARCH_FALLBACK: ${PIF_SEARCH_FALLBACK:-offline}
+      PIF_SEARCH_MAILTO: ${PIF_SEARCH_MAILTO:-you@example.com}
+      PIF_SEARCH_USER_AGENT: ${PIF_SEARCH_USER_AGENT:-pif-research-platform/0.1 (mailto:you@example.com)}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs').read()"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    command:
+      [
+        "streamlit",
+        "run",
+        "streamlit_app.py",
+        "--server.address",
+        "0.0.0.0",
+        "--server.port",
+        "8501"
+      ]
+    environment:
+      PYTHONPATH: /app/src
+      PIF_RA_API_BASE_URL: http://api:8000
+      PIF_RA_API_TIMEOUT_SECONDS: ${PIF_RA_API_TIMEOUT_SECONDS:-180}
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    depends_on:
+      api:
+        condition: service_healthy
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["init"]
+    volumes:
+      - ollama_data:/root/.ollama
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: "ollama pull ${PIF_LOCAL_LLM_MODEL:-qwen3:14b}"
+
+volumes:
+  ollama_data:

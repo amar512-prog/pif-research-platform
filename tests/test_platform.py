@@ -469,6 +469,42 @@ def test_api_endpoints_match_service_contract(tmp_path: Path) -> None:
     assert response.json()["run_id"] == run_id
 
 
+def test_artifact_download_endpoint_serves_completed_run_files(tmp_path: Path) -> None:
+    service = build_default_service(tmp_path)
+    client = TestClient(create_app(service))
+    summary = service.create_run(
+        RunCreateRequest(
+            topic=GENERIC_TOPIC,
+            output_format=OutputFormat.MARKDOWN,
+            target_word_count=1800,
+        )
+    )
+    run_id = summary.run_id
+
+    for checkpoint in [CheckpointId.CONFIG, CheckpointId.PLAN, CheckpointId.DATA, CheckpointId.ANALYSIS]:
+        summary = service.submit_checkpoint(
+            run_id,
+            CheckpointSubmission(
+                checkpoint_id=checkpoint,
+                decision=CheckpointDecision.APPROVE,
+                feedback="Proceed",
+            ),
+        )
+    summary = service.submit_checkpoint(
+        run_id,
+        CheckpointSubmission(
+            checkpoint_id=CheckpointId.REVIEW,
+            decision=CheckpointDecision.APPROVE,
+            feedback="Apply reviewer fixes.",
+        ),
+    )
+
+    response = client.get(f"/runs/{run_id}/artifacts/report")
+    assert response.status_code == 200
+    assert "attachment" in response.headers.get("content-disposition", "").lower()
+    assert b"Policy Brief" in response.content
+
+
 def test_restart_from_stage_truncates_later_outputs(tmp_path: Path) -> None:
     service = build_default_service(tmp_path)
     summary = service.create_run(
