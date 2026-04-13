@@ -1,0 +1,10 @@
+.conda-env/
+.conda-pkgs/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+research_runs.db
+runs/
+
