@@ -75,32 +75,48 @@ st.markdown("""
       background: #fffbeb; border: 2px solid #f59e0b; padding: 1.25rem;
       margin-top: 1rem; border-radius: 8px; color: #92400e;
     }
-    button[kind="primary"] {
+    button[kind="primary"],
+    button[kind="primaryFormSubmit"],
+    button[data-testid="stBaseButton-primaryFormSubmit"] {
       background: #2563eb !important;
       border: 1px solid #2563eb !important;
       color: #ffffff !important;
     }
-    button[kind="primary"]:hover {
+    button[kind="primary"]:hover,
+    button[kind="primaryFormSubmit"]:hover,
+    button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
       background: #1d4ed8 !important;
       border-color: #1d4ed8 !important;
       color: #ffffff !important;
     }
     button[kind="primary"]:focus,
-    button[kind="primary"]:focus-visible {
+    button[kind="primary"]:focus-visible,
+    button[kind="primaryFormSubmit"]:focus,
+    button[kind="primaryFormSubmit"]:focus-visible,
+    button[data-testid="stBaseButton-primaryFormSubmit"]:focus,
+    button[data-testid="stBaseButton-primaryFormSubmit"]:focus-visible {
       box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25) !important;
     }
-    button[kind="secondary"] {
+    button[kind="secondary"],
+    button[kind="secondaryFormSubmit"],
+    button[data-testid="stBaseButton-secondaryFormSubmit"] {
       background: #f9a8d4 !important;
       border: 1px solid #f472b6 !important;
       color: #831843 !important;
     }
-    button[kind="secondary"]:hover {
+    button[kind="secondary"]:hover,
+    button[kind="secondaryFormSubmit"]:hover,
+    button[data-testid="stBaseButton-secondaryFormSubmit"]:hover {
       background: #ef4444 !important;
       border-color: #dc2626 !important;
       color: #ffffff !important;
     }
     button[kind="secondary"]:focus,
-    button[kind="secondary"]:focus-visible {
+    button[kind="secondary"]:focus-visible,
+    button[kind="secondaryFormSubmit"]:focus,
+    button[kind="secondaryFormSubmit"]:focus-visible,
+    button[data-testid="stBaseButton-secondaryFormSubmit"]:focus,
+    button[data-testid="stBaseButton-secondaryFormSubmit"]:focus-visible {
       box-shadow: 0 0 0 0.2rem rgba(244, 114, 182, 0.25) !important;
     }
     </style>
