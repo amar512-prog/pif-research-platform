@@ -154,6 +154,10 @@ DOMAIN_CONFIGS = [
 ]
 
 
+def _prompt_block(tag: str, content: str) -> str:
+    return f"<{tag}>\n{content.strip()}\n</{tag}>"
+
+
 def infer_topic_profile(topic: str) -> TopicProfile:
     topic_lower = topic.lower().replace("gdsp", "gsdp")
     config = DOMAIN_CONFIGS[-1]
@@ -196,19 +200,70 @@ def infer_topic_profile_with_llm(topic: str, local_llm: Any) -> TopicProfile:
         "source_themes": fallback.source_themes or _fallback_source_themes(topic),
     }
     result = local_llm.complete_json(
-        system_prompt=(
-            "You design topic-specific research profiles for a policy analysis workflow. Return strict JSON with keys "
-            "'domain', 'geography', 'research_goal', 'headline_metric_label', 'headline_unit', 'comparator_label', "
-            "'dimension_label', 'keywords', 'indicator_dimensions', and 'source_themes'. Create a short snake_case "
-            "domain derived from the actual query instead of forcing it into a fixed taxonomy. Choose a headline metric "
-            "and dimensions that fit the topic directly. Do not frame non-economic topics as GDP or macroeconomy unless "
-            "the query explicitly asks for that."
+        system_prompt="\n\n".join(
+            [
+                _prompt_block(
+                    "role",
+                    "You design topic-specific research profiles for a policy analysis workflow.",
+                ),
+                _prompt_block(
+                    "objective",
+                    "Map the user query into a reusable research profile that will guide planning, search, "
+                    "indicator design, and report writing.",
+                ),
+                _prompt_block(
+                    "constraints",
+                    "Create a short snake_case domain derived from the actual query rather than forcing the topic into "
+                    "a fixed taxonomy. Choose a headline metric, comparator, and dimensions that fit the topic "
+                    "directly. If the topic is not economic, do not frame it as GDP, GSDP, macroeconomy, growth, or "
+                    "nowcasting unless the query explicitly asks for that. Keep keywords and source themes specific to "
+                    "the topic. Use geography only if it is explicit or strongly implied; otherwise return null. Avoid "
+                    "invented certainty, jargon for its own sake, or generic labels such as generic_policy unless the "
+                    "query is truly broad.",
+                ),
+                _prompt_block(
+                    "output_contract",
+                    "Return exactly one JSON object and nothing else. Required keys: domain, geography, research_goal, "
+                    "headline_metric_label, headline_unit, comparator_label, dimension_label, keywords, "
+                    "indicator_dimensions, source_themes. keywords must contain 4 to 8 short items. "
+                    "indicator_dimensions must contain 4 to 6 short non-overlapping labels. source_themes must contain "
+                    "4 to 6 searchable themes. Do not wrap the JSON in markdown fences.",
+                ),
+                _prompt_block(
+                    "quality_bar",
+                    "A strong answer is operational, topic-native, non-generic, and honest about ambiguity. The profile "
+                    "should make downstream indicator selection feel obvious.",
+                ),
+                _prompt_block(
+                    "example_good",
+                    'Query: Assess groundwater stress in rural Rajasthan using extraction pressure, recharge conditions, '
+                    'irrigation demand, and governance enforcement.\n'
+                    'JSON: {"domain":"groundwater_management","geography":"Rajasthan","research_goal":"Assess '
+                    'groundwater stress, recharge constraints, and implementation priorities for the topic.",'
+                    '"headline_metric_label":"Groundwater stress score","headline_unit":"index",'
+                    '"comparator_label":"Previous stress baseline","dimension_label":"Aquifer driver attribution",'
+                    '"keywords":["groundwater","aquifer","recharge","irrigation","extraction"],'
+                    '"indicator_dimensions":["Extraction","Recharge","Demand","Governance","Risk"],'
+                    '"source_themes":["aquifer depletion","recharge management","irrigation demand","enforcement and monitoring"]}',
+                ),
+                _prompt_block(
+                    "example_bad",
+                    'Do not turn the groundwater query above into {"domain":"macroeconomy","headline_metric_label":"Economic momentum estimate",...}.',
+                ),
+            ]
         ),
-        user_prompt=(
-            f"Topic: {topic}\n"
-            f"Heuristic fallback domain: {fallback.domain}\n"
-            f"Heuristic fallback research goal: {fallback.research_goal}\n"
-            "Return JSON only."
+        user_prompt="\n\n".join(
+            [
+                _prompt_block("topic", topic),
+                _prompt_block(
+                    "heuristic_context",
+                    f"Fallback domain: {fallback.domain}\nFallback research goal: {fallback.research_goal}",
+                ),
+                _prompt_block(
+                    "response_instruction",
+                    "Return JSON only. Use the fallback only when it clearly fits the query better than a new domain.",
+                ),
+            ]
         ),
         fallback=fallback_payload,
     )
@@ -256,20 +311,59 @@ def build_indicator_specs_with_llm(
         ]
     }
     result = local_llm.complete_json(
-        system_prompt=(
-            "You design indicator baskets for policy-analysis workflows. Return strict JSON with one key: "
-            "'indicators'. The value must be a list of 5 or 6 objects, each containing 'indicator_id', 'label', "
-            "'frequency', 'unit', 'sector_bucket', and 'rationale'. Make the basket specific to the topic and the "
-            "stated dimensions. Use short uppercase IDs. Prefer publicly observable operational indicators or good "
-            "proxies. Do not include source URLs or citation text."
+        system_prompt="\n\n".join(
+            [
+                _prompt_block(
+                    "role",
+                    "You design indicator baskets for policy-analysis workflows.",
+                ),
+                _prompt_block(
+                    "objective",
+                    "Produce a compact indicator basket that helps a policy analyst monitor the stated topic, explain "
+                    "movement in the headline metric, and support implementation decisions.",
+                ),
+                _prompt_block(
+                    "constraints",
+                    "Return 5 or 6 indicators. Each indicator must be specific to the topic, map to one supplied "
+                    "dimension, and be useful for monitoring. Prefer directly observable operational indicators; use a "
+                    "proxy only when no better public indicator is obvious, and state that clearly in the rationale. "
+                    "Use short uppercase indicator IDs. Avoid duplicates, placeholders, generic labels like SIGNAL1, "
+                    "and filler indicators from unrelated domains. sector_bucket must be one of the supplied "
+                    "dimensions. Do not include source URLs, citations, or markdown.",
+                ),
+                _prompt_block(
+                    "output_contract",
+                    "Return exactly one JSON object with one key: indicators. indicators must be a list of objects with "
+                    "keys indicator_id, label, frequency, unit, sector_bucket, and rationale. label should usually be 2 "
+                    "to 6 words. rationale should be one sentence explaining why the indicator matters for this topic.",
+                ),
+                _prompt_block(
+                    "quality_bar",
+                    "A strong basket covers the main drivers without becoming repetitive, and it would still make sense "
+                    "to a domain expert reading only the indicator names.",
+                ),
+                _prompt_block(
+                    "example_good",
+                    'For a court-backlog topic, good indicators include case pendency trend, case clearance rate, judge '
+                    'vacancy pressure, digital filing adoption, and legal aid access trend.',
+                ),
+                _prompt_block(
+                    "example_bad",
+                    "Do not respond with generic indicators such as financing signal, risk signal, or demand signal "
+                    "unless the topic itself is generic and those are genuinely the best labels.",
+                ),
+            ]
         ),
-        user_prompt=(
-            f"Topic: {topic}\n"
-            f"Domain: {profile.domain}\n"
-            f"Research goal: {profile.research_goal}\n"
-            f"Headline metric: {profile.headline_metric_label}\n"
-            f"Dimensions: {', '.join(profile.indicator_dimensions)}\n"
-            "Return JSON only."
+        user_prompt="\n\n".join(
+            [
+                _prompt_block("topic", topic),
+                _prompt_block("domain", profile.domain),
+                _prompt_block("research_goal", profile.research_goal),
+                _prompt_block("headline_metric", f"{profile.headline_metric_label} ({profile.headline_unit})"),
+                _prompt_block("dimensions", ", ".join(profile.indicator_dimensions)),
+                _prompt_block("keywords", ", ".join(profile.keywords)),
+                _prompt_block("response_instruction", "Return JSON only."),
+            ]
         ),
         fallback=fallback_payload,
     )

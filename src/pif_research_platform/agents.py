@@ -34,6 +34,10 @@ def _flag_enabled(notes: str | None, flag: str) -> bool:
     return bool(notes and flag in notes)
 
 
+def _prompt_block(tag: str, content: str) -> str:
+    return f"<{tag}>\n{content.strip()}\n</{tag}>"
+
+
 @dataclass(slots=True)
 class AgentSuite:
     settings: AppSettings
@@ -88,22 +92,55 @@ class AgentSuite:
             f"{self.local_llm.runtime_label()}."
         )
         planner_text = self.local_llm.complete_json(
-            system_prompt=(
-                "You are a policy research planner for a local-LLM prototype. Return strict JSON with keys "
-                "'problem_statement', 'analytical_method', and 'planner_notes'. Keep the problem statement to one "
-                "short paragraph, the analytical method to 2-3 short sentences, and the planner note to one sentence."
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block(
+                        "role",
+                        "You are a policy research planner for a local-LLM prototype.",
+                    ),
+                    _prompt_block(
+                        "objective",
+                        "Write the planning copy that will guide literature review, data collection, analysis, and final "
+                        "reporting for a senior policy audience.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Use the supplied topic profile as the source of truth. Keep the problem statement to one short "
+                        "paragraph focused on the actual policy question. Keep the analytical method to 2 or 3 short "
+                        "sentences that explain what will be measured, compared, and how uncertainty will be handled. "
+                        "planner_notes must be one sentence describing the main execution risk, ambiguity, or evidence "
+                        "gap to watch. Avoid boilerplate, avoid repeating the user's topic verbatim more than needed, "
+                        "and do not drift into macroeconomic framing unless the supplied profile calls for it.",
+                    ),
+                    _prompt_block(
+                        "output_contract",
+                        "Return exactly one JSON object and nothing else. Required keys: problem_statement, "
+                        "analytical_method, planner_notes. Do not include markdown fences or extra commentary.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong plan sounds like a senior analyst briefing the next workflow stage, not like a generic "
+                        "template.",
+                    ),
+                ]
             ),
-            user_prompt=(
-                f"Topic: {run.topic}\n"
-                f"Domain: {profile.domain}\n"
-                f"Research goal: {profile.research_goal}\n"
-                f"Audience: {profile.audience}\n"
-                f"Headline metric: {profile.headline_metric_label}\n"
-                f"Indicator dimensions: {', '.join(profile.indicator_dimensions)}\n"
-                f"Geography: {profile.geography or 'Not explicitly specified'}\n"
-                f"LLM runtime: {self.local_llm.runtime_label()}\n"
-                f"Notes: {run.notes or 'None'}\n"
-                "Return JSON only."
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("domain", profile.domain),
+                    _prompt_block("research_goal", profile.research_goal),
+                    _prompt_block("audience", profile.audience),
+                    _prompt_block("headline_metric", profile.headline_metric_label),
+                    _prompt_block("indicator_dimensions", ", ".join(profile.indicator_dimensions)),
+                    _prompt_block("geography", profile.geography or "Not explicitly specified"),
+                    _prompt_block(
+                        "approved_sections",
+                        "\n".join(f"- {item.title}: {item.target_words} words" for item in section_plan),
+                    ),
+                    _prompt_block("notes", run.notes or "None"),
+                    _prompt_block("runtime", self.local_llm.runtime_label()),
+                    _prompt_block("response_instruction", "Return JSON only."),
+                ]
             ),
             fallback={
                 "problem_statement": problem_fallback,
@@ -151,29 +188,73 @@ class AgentSuite:
             f"[{source.source_id}] {source.summary} {source.relevance}" for source in sources[:6]
         )
         introduction_summary = self.local_llm.complete(
-            system_prompt="Write a crisp introduction paragraph for a policy literature review.",
-            user_prompt=(
-                f"Topic: {run.topic}\n"
-                f"Domain: {profile.domain}\n"
-                f"Audience: {profile.audience}\n"
-                f"Use case: a policy brief for {profile.geography or 'the relevant geography'}."
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You write opening context for a policy literature review."),
+                    _prompt_block(
+                        "objective",
+                        "Frame why this topic matters, what lens the literature should be read through, and why a "
+                        "senior policy reader should care.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Write one paragraph of 2 to 4 sentences. Use topic-specific nouns from the query. Do not cite "
+                        "sources in this opening paragraph. Do not imply that the underlying evidence is already "
+                        "verified or that full texts were reviewed unless that was explicitly provided.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong opening feels specific to the topic and avoids stock phrases such as 'the current run' "
+                        "or 'this brief seeks to'.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("domain", profile.domain),
+                    _prompt_block("audience", profile.audience),
+                    _prompt_block("geography", profile.geography or "the relevant geography"),
+                    _prompt_block("research_goal", profile.research_goal),
+                ]
             ),
             fallback=intro_fallback,
         )
         literature_review_summary = self.local_llm.complete(
-            system_prompt=(
-                "Synthesize the literature into one compact paragraph. Mention depth of evidence, implementation "
-                "relevance, and where the current brief can add value. Preserve citation markers like [S1]."
-            ),
-            user_prompt="\n".join(
+            system_prompt="\n\n".join(
                 [
-                    f"Topic: {run.topic}",
-                    f"Domain: {profile.domain}",
-                    "Sources:",
-                    *[
-                        f"[{source.source_id}] {source.title} | Summary: {source.summary} | Relevance: {source.relevance}"
-                        for source in sources[:6]
-                    ],
+                    _prompt_block("role", "You synthesize policy literature for a senior government brief."),
+                    _prompt_block(
+                        "objective",
+                        "Summarize what the available evidence appears to suggest, where the important gaps or disputes "
+                        "remain, and how the current brief can still add practical value.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Use only the supplied source metadata, summaries, methodologies, and relevance notes. Do not "
+                        "claim that you read the full article unless full text is explicitly provided. Preserve citation "
+                        "markers exactly as supplied, such as [S1]. Write one compact paragraph of 4 to 6 sentences. "
+                        "Avoid source-by-source listing, invented evidence, or overstated causality.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong synthesis distinguishes evidence from inference, highlights implementation relevance, "
+                        "and acknowledges uncertainty without sounding vague.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("domain", profile.domain),
+                    _prompt_block(
+                        "sources",
+                        "\n".join(
+                            f"[{source.source_id}] {source.title} | Summary: {source.summary} | "
+                            f"Method: {source.methodology} | Relevance: {source.relevance}"
+                            for source in sources[:6]
+                        ),
+                    ),
                 ]
             ),
             fallback=literature_fallback,
@@ -438,18 +519,44 @@ class AgentSuite:
             f"{leading_dimension.lower()}."
         )
         executive_summary = self.local_llm.complete(
-            system_prompt=(
-                "Write an executive summary paragraph for a policy brief. Keep it concise, direct, and cite the supplied "
-                "analysis datapoint marker [A1]."
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You write executive summaries for senior policy briefs."),
+                    _prompt_block(
+                        "objective",
+                        "Lead with the main takeaway, quantify the current finding, and explain why it matters for the "
+                        "policy question at hand.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Write one paragraph of 3 to 5 sentences. Cite the supplied analysis datapoint marker [A1]. Use "
+                        "topic-specific nouns from the query. Mention the comparator and the dominant dimension. Avoid "
+                        "generic openings such as 'The current run evaluates' and avoid mentioning the architecture, "
+                        "workflow, or LLM unless it is directly relevant to the policy finding.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong executive summary sounds decision-oriented, specific, and calm about uncertainty.",
+                    ),
+                ]
             ),
-            user_prompt=(
-                f"Topic: {run.topic}\n"
-                f"Geography: {geography}\n"
-                f"Headline metric: {analysis.headline_metric_label}\n"
-                f"Point estimate: {analysis.point_estimate} {analysis.headline_unit}\n"
-                f"Confidence band: {analysis.confidence_low} to {analysis.confidence_high}\n"
-                f"Comparator: {analysis.comparator_label} = {analysis.last_official_estimate}\n"
-                f"Dominant dimension: {leading_dimension}"
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("research_goal", profile.research_goal),
+                    _prompt_block("geography", geography),
+                    _prompt_block("headline_metric", analysis.headline_metric_label),
+                    _prompt_block("point_estimate", f"{analysis.point_estimate} {analysis.headline_unit}"),
+                    _prompt_block(
+                        "confidence_band",
+                        f"{analysis.confidence_low} to {analysis.confidence_high}",
+                    ),
+                    _prompt_block(
+                        "comparator",
+                        f"{analysis.comparator_label} = {analysis.last_official_estimate}",
+                    ),
+                    _prompt_block("dominant_dimension", leading_dimension),
+                ]
             ),
             fallback=executive_fallback,
         )
@@ -494,12 +601,33 @@ class AgentSuite:
             "metric can translate into a stable policy signal rather than a one-off fluctuation."
         )
         findings_intro = self.local_llm.complete(
-            system_prompt="Write one short findings paragraph for a policy brief. Mention scenario framing.",
-            user_prompt=(
-                f"Topic: {run.topic}\n"
-                f"Leading dimension: {leading_dimension}\n"
-                f"Scenario commentary: {analysis.scenario_commentary}\n"
-                f"Citations available: {citations}"
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You write the opening paragraph for a key findings section."),
+                    _prompt_block(
+                        "objective",
+                        "Explain what is driving the current result and why that matters for the user's policy question.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Write one short paragraph of 2 to 4 sentences. Mention scenario framing. Do not repeat the "
+                        "executive summary wording. Do not simply restate the numeric datapoints that will appear in the "
+                        "bullets below. Use topic-specific language and make the practical implication clear.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong findings intro explains significance, not just movement.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("leading_dimension", leading_dimension),
+                    _prompt_block("scenario_commentary", analysis.scenario_commentary),
+                    _prompt_block("executive_summary", executive_summary),
+                    _prompt_block("citations_available", citations),
+                ]
             ),
             fallback=findings_intro_fallback + " Scenario lens: if the leading dimension weakens, the confidence band should be treated more cautiously.",
         )
@@ -629,11 +757,38 @@ class AgentSuite:
             "clearer agency ownership, and a more explicit explanation of how the headline metric translates into action."
         )
         reviewer_summary = self.local_llm.complete(
-            system_prompt="Write a concise review summary for a policy report scorecard.",
-            user_prompt=(
-                f"Cycle: {cycle_number}\n"
-                f"Composite score: {composite}\n"
-                f"Priority fixes: {'; '.join(priority_fixes)}"
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You are a zero-context reviewer summarizing a policy report scorecard."),
+                    _prompt_block(
+                        "objective",
+                        "State the overall verdict and identify the highest-leverage fixes the next revision should make.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Write 2 to 4 sentences. Base the summary only on the supplied score summary and fixes. Do not "
+                        "invent new issues, do not praise vaguely, and do not mention information outside the artifact. "
+                        "When possible, point to section-level changes the writer should make.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong review summary is blunt but constructive, specific, and revision-oriented.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("cycle", str(cycle_number)),
+                    _prompt_block("composite_score", str(composite)),
+                    _prompt_block(
+                        "lowest_scoring_criteria",
+                        "; ".join(
+                            f"{criterion.criterion}={criterion.score}"
+                            for criterion in sorted(criteria, key=lambda item: item.score)[:3]
+                        ),
+                    ),
+                    _prompt_block("priority_fixes", "; ".join(priority_fixes)),
+                ]
             ),
             fallback=summary_fallback,
         )
@@ -922,7 +1077,50 @@ class AgentSuite:
             selected_sections.append(section)
             if word_count("\n\n".join(selected_sections)) >= target_words:
                 break
-        return "\n\n".join(selected_sections)
+        fallback_text = "\n\n".join(selected_sections)
+        generated_text = self.local_llm.complete(
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You expand a policy brief with a monitoring watchlist section."),
+                    _prompt_block(
+                        "objective",
+                        "Write the body of a single monitoring watchlist section that helps a senior policy team decide "
+                        "what to monitor next, who owns the response, and when to escalate.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Return markdown body only for the watchlist section and do not include the heading. Use the "
+                        "supplied indicator movements and owners. Cover distinct angles such as overview, priority "
+                        "signals, escalation triggers, review rhythm, decision questions, and data-quality checks. Do "
+                        "not repeat any sentence or paragraph. Do not pad by restating the same watchlist language. "
+                        "Keep the section topic-specific and decision-oriented.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong watchlist helps a programme owner act on the next release cycle rather than simply "
+                        "describing indicators.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("geography", geography),
+                    _prompt_block("headline_metric", analysis.headline_metric_label),
+                    _prompt_block("dimension_label", profile.dimension_label),
+                    _prompt_block(
+                        "indicator_snapshot",
+                        render_markdown_table(indicator_rows, ["Indicator", "Owner", "Watch for", "Trigger"]),
+                    ),
+                    _prompt_block("owners", f"Lead: {owners['lead']}\nOperations: {owners['operations']}\nMonitor: {owners['monitor']}"),
+                    _prompt_block("target_length", f"Aim for about {target_words} words."),
+                ]
+            ),
+            fallback=fallback_text,
+        ).strip()
+        if word_count(generated_text) < max(120, int(target_words * 0.60)):
+            return fallback_text
+        return generated_text
 
     def _build_policy_recommendations(
         self,
@@ -978,12 +1176,73 @@ class AgentSuite:
                     f"{secondary.label.lower()} strengthen together, the programme can move from containment to structured scale-up."
                 )
             )
-        return (
+        fallback_text = (
             "## Policy Recommendations\n"
             + "\n".join(f"{index}. {line}" for index, line in enumerate(policy_lines, start=1))
             + "\n\n"
             + "\n\n".join(sequencing_lines)
         )
+        generated_text = self.local_llm.complete(
+            system_prompt="\n\n".join(
+                [
+                    _prompt_block("role", "You write the policy recommendations section of a senior policy brief."),
+                    _prompt_block(
+                        "objective",
+                        "Translate the analysis into implementer-specific recommendations with clear ownership and "
+                        "practical sequencing.",
+                    ),
+                    _prompt_block(
+                        "constraints",
+                        "Return markdown only for this section. Keep the exact heading '## Policy Recommendations' and "
+                        "the exact subheading '### Implementation Sequencing and Agency Ownership'. Include exactly 3 "
+                        "numbered recommendations. Recommendation 1 must begin with the exact phrase 'Lead "
+                        "implementing agency:'. Every recommendation must name an owner, action, and implementation "
+                        "logic tied to the supplied indicators or analysis markers. Then write 3 or 4 short sequencing "
+                        "paragraphs under the subheading. Avoid boilerplate, avoid generic filler, and do not repeat "
+                        "phrases from the executive summary or key findings.",
+                    ),
+                    _prompt_block(
+                        "quality_bar",
+                        "A strong section makes it obvious who should act first, what they should do, and what evidence "
+                        "would justify escalation or scale-up.",
+                    ),
+                ]
+            ),
+            user_prompt="\n\n".join(
+                [
+                    _prompt_block("topic", run.topic),
+                    _prompt_block("geography", geography),
+                    _prompt_block("domain", profile.domain),
+                    _prompt_block("research_goal", profile.research_goal),
+                    _prompt_block("headline_metric", analysis.headline_metric_label),
+                    _prompt_block("leading_dimension", leading_dimension),
+                    _prompt_block(
+                        "owners",
+                        f"Lead: {owners['lead']}\nOperations: {owners['operations']}\nMonitor: {owners['monitor']}",
+                    ),
+                    _prompt_block(
+                        "priority_indicators",
+                        "\n".join(
+                            [
+                                f"Primary: {primary.label} ({primary.delta:+.1f} {primary.unit})",
+                                f"Secondary: {secondary.label} ({secondary.delta:+.1f} {secondary.unit})",
+                                f"Weakest: {weakest.label} ({weakest.delta:+.1f} {weakest.unit})",
+                            ]
+                        ),
+                    ),
+                    _prompt_block("scenario_commentary", analysis.scenario_commentary),
+                    _prompt_block("revision_context", "Strengthened revision requested." if improved_revision else "First-pass draft."),
+                ]
+            ),
+            fallback=fallback_text,
+        ).strip()
+        if (
+            "## Policy Recommendations" not in generated_text
+            or "### Implementation Sequencing and Agency Ownership" not in generated_text
+            or "Lead implementing agency:" not in generated_text
+        ):
+            return fallback_text
+        return generated_text
 
     def _agency_owners(self, profile, geography: str) -> dict[str, str]:
         geography_prefix = "" if geography == "the target geography" else f"{geography} "
