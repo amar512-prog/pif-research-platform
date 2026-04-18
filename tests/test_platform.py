@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from pif_research_platform.api import create_app
+from pif_research_platform.adapters.indicator_values import FetchResult, IndicatorValueConnector
 from pif_research_platform.models import (
     AnalysisPack,
     AnalysisDataPoint,
@@ -90,8 +91,17 @@ def test_end_to_end_run_generates_required_outputs(tmp_path: Path) -> None:
     assert 1620 <= word_count(report_text) <= 1980
     assert "Maharashtra" not in report_text
     assert "Karnataka" in report_text
+    assert "provenance metadata" in report_text
+    assert "fixture-backed" in report_text
+    state = service.repo.load_state(run_id)
+    assert state.indicator_pack is not None
+    assert state.indicator_pack.retrieval_mode == "fixture"
+    assert all(item.retrieval_mode == "fixture" for item in state.indicator_pack.indicators)
+    assert all(item.retrieval_status == "fixture" for item in state.indicator_pack.indicators)
     workbook = load_workbook(workbook_path)
     assert {"indicator_table", "metadata", "analysis_output"}.issubset(set(workbook.sheetnames))
+    headers = [cell.value for cell in workbook["indicator_table"][1]]
+    assert {"retrieval_mode", "retrieval_status", "connector_id", "retrieved_at"}.issubset(set(headers))
 
 
 def test_checkpoint_revisions_restart_correct_stage(tmp_path: Path) -> None:
@@ -467,6 +477,102 @@ def test_api_endpoints_match_service_contract(tmp_path: Path) -> None:
     response = client.get(f"/runs/{run_id}/detail")
     assert response.status_code == 200
     assert response.json()["run_id"] == run_id
+
+
+def test_run_detail_includes_indicator_provenance_fields(tmp_path: Path) -> None:
+    service = build_default_service(tmp_path)
+    client = TestClient(create_app(service))
+    summary = service.create_run(RunCreateRequest(topic=GENERIC_TOPIC))
+
+    for checkpoint in [CheckpointId.CONFIG, CheckpointId.PLAN]:
+        service.submit_checkpoint(
+            summary.run_id,
+            CheckpointSubmission(
+                checkpoint_id=checkpoint,
+                decision=CheckpointDecision.APPROVE,
+                feedback="Proceed",
+            ),
+        )
+
+    response = client.get(f"/runs/{summary.run_id}/detail")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["indicator_pack"]["retrieval_mode"] == "fixture"
+    first_indicator = payload["indicator_dataset"][0]
+    assert first_indicator["retrieval_mode"] == "fixture"
+    assert first_indicator["retrieval_status"] == "fixture"
+    assert first_indicator["connector_id"] is None
+    assert "retrieved_at" in first_indicator
+
+
+def test_hybrid_indicator_collection_marks_mixed_mode_and_workbook_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIF_INDICATOR_PROVIDER", "hybrid")
+    monkeypatch.setenv("PIF_INDICATOR_FALLBACK", "fixture")
+    service = build_default_service(tmp_path)
+
+    class TaxLiveConnector(IndicatorValueConnector):
+        connector_id = "tax-live"
+
+        def supports(self, topic_profile, spec) -> bool:
+            del topic_profile
+            return spec.indicator_id == "TAX"
+
+        def fetch(self, context, *, browser_runner=None) -> FetchResult:
+            del browser_runner
+            return FetchResult(
+                reference_period="2026-Q2",
+                latest_value=11.4,
+                prior_value=9.8,
+                notes="Live tax collection series retrieved from a connector.",
+            )
+
+    service.agent_suite.indicator_value_collector.registry.register(TaxLiveConnector())
+
+    summary = service.create_run(RunCreateRequest(topic="Analysis latest gdsp of delhi"))
+    service.submit_checkpoint(
+        summary.run_id,
+        CheckpointSubmission(
+            checkpoint_id=CheckpointId.CONFIG,
+            decision=CheckpointDecision.APPROVE,
+            feedback="Proceed",
+        ),
+    )
+    service.submit_checkpoint(
+        summary.run_id,
+        CheckpointSubmission(
+            checkpoint_id=CheckpointId.PLAN,
+            decision=CheckpointDecision.APPROVE,
+            feedback="Proceed",
+        ),
+    )
+
+    state = service.repo.load_state(summary.run_id)
+    assert state.indicator_pack is not None
+    assert state.indicator_pack.retrieval_mode == "mixed"
+    observed = {item.indicator_id: item for item in state.indicator_pack.indicators}
+    assert observed["TAX"].retrieval_mode == "live"
+    assert observed["TAX"].retrieval_status == "live"
+    assert observed["TAX"].connector_id == "tax-live"
+    fallback_items = [item for item in state.indicator_pack.indicators if item.indicator_id != "TAX"]
+    assert fallback_items
+    assert all(item.retrieval_mode == "fixture" for item in fallback_items)
+    assert all(item.retrieval_status == "fallback" for item in fallback_items)
+
+    workbook = load_workbook(Path(state.artifact_paths["indicator_workbook"]))
+    headers = [cell.value for cell in workbook["indicator_table"][1]]
+    assert headers[:6] == [
+        "indicator_id",
+        "label",
+        "reference_period",
+        "latest_value",
+        "unit",
+        "dimension",
+    ]
+    assert "retrieval_mode" in headers
+    assert "connector_id" in headers
 
 
 def test_artifact_download_endpoint_serves_completed_run_files(tmp_path: Path) -> None:

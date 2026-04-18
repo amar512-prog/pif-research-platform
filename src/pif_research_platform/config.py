@@ -18,6 +18,13 @@ DEFAULT_SECTIONS = [
 ]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(slots=True)
 class LocalLLMSettings:
     provider: str = "ollama"
@@ -47,6 +54,15 @@ class SearchSettings:
 
 
 @dataclass(slots=True)
+class IndicatorDataSettings:
+    provider: str = "fixture"
+    fallback_provider: str = "fixture"
+    timeout_seconds: float = 12.0
+    browser_timeout_seconds: float = 30.0
+    allow_browser: bool = False
+
+
+@dataclass(slots=True)
 class AppSettings:
     root_dir: Path
     runs_dir: Path
@@ -56,6 +72,7 @@ class AppSettings:
     default_sections: list[str] = field(default_factory=lambda: list(DEFAULT_SECTIONS))
     local_llm: LocalLLMSettings = field(default_factory=LocalLLMSettings)
     search: SearchSettings = field(default_factory=SearchSettings)
+    indicator_data: IndicatorDataSettings = field(default_factory=IndicatorDataSettings)
 
     @classmethod
     def from_root(cls, root_dir: Path | str) -> "AppSettings":
@@ -90,5 +107,12 @@ class AppSettings:
                 ),
                 max_results=int(os.environ.get("PIF_SEARCH_MAX_RESULTS", "8")),
                 fallback_provider=os.environ.get("PIF_SEARCH_FALLBACK", "offline"),
+            ),
+            indicator_data=IndicatorDataSettings(
+                provider=os.environ.get("PIF_INDICATOR_PROVIDER", "fixture"),
+                fallback_provider=os.environ.get("PIF_INDICATOR_FALLBACK", "fixture"),
+                timeout_seconds=float(os.environ.get("PIF_INDICATOR_TIMEOUT", "12.0")),
+                browser_timeout_seconds=float(os.environ.get("PIF_INDICATOR_BROWSER_TIMEOUT", "30.0")),
+                allow_browser=_env_bool("PIF_INDICATOR_ALLOW_BROWSER", False),
             ),
         )

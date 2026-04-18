@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any
 
+from .adapters.indicator_values import IndicatorValueCollector
 from .adapters.local_llm import LocalLLMAdapter
 from .adapters.search import BaseSearchAdapter
 from .analysis.generic_topic import GenericTopicAnalysisStrategy
@@ -13,6 +14,7 @@ from .models import (
     AnalysisPack,
     CheckpointId,
     CriterionScore,
+    IndicatorObservation,
     IndicatorPack,
     LiteraturePack,
     PlannerOutput,
@@ -43,6 +45,7 @@ class AgentSuite:
     settings: AppSettings
     repo: RunRepository
     search_adapter: BaseSearchAdapter
+    indicator_value_collector: IndicatorValueCollector
     local_llm: LocalLLMAdapter
     strategy: GenericTopicAnalysisStrategy
     pdf_exporter: SimplePDFExporter
@@ -281,21 +284,14 @@ class AgentSuite:
 
     def data_collection(self, run: SerializedRunState) -> SerializedRunState:
         profile = self._profile(run)
-        indicators = self.search_adapter.collect_indicator_values(run.topic, profile, run.indicator_plan)
-        pack = IndicatorPack(
-            retrieval_mode="fixture",
-            indicators=indicators,
-            metadata={
-                "topic": run.topic,
-                "domain": profile.domain,
-                "reference_period": indicators[0].reference_period if indicators else "Current cycle",
-                "mode": "offline local-fixture",
-                "llm_runtime": self.local_llm.runtime_label(),
-                "note": "Narrative generation uses a local LLM when available and falls back to templates otherwise.",
-            },
+        pack = self.indicator_value_collector.collect(
+            run.topic,
+            profile,
+            run.indicator_plan,
+            llm_runtime_label=self.local_llm.runtime_label(),
         )
         run.indicator_pack = pack
-        run.indicator_dataset = indicators
+        run.indicator_dataset = pack.indicators
         run.current_node = "data_collection"
         run.artifact_paths["data_collection_log"] = self.repo.write_markdown(
             run.run_id, "logs/data_collection.md", self._render_data_collection_markdown(pack)
@@ -315,7 +311,7 @@ class AgentSuite:
                     status="verified",
                     primary_source=source.url,
                     secondary_source=source.alternate_url,
-                    note="Primary and alternate fixture entries align on title, year, and claimed relevance.",
+                    note="Primary and alternate source records align on title, year, and claimed relevance.",
                 )
             )
             allowlist.append(source.source_id)
@@ -327,14 +323,14 @@ class AgentSuite:
                     status="verified",
                     primary_source=indicator.primary_source_url,
                     secondary_source=indicator.verification_source_url,
-                    note="Offline fixture values match within the deterministic validation rules.",
+                    note=self._indicator_verification_note(indicator),
                 )
             )
         pack = VerificationPack(
             verified_allowlist=allowlist,
             verification_items=verification_items,
             flagged_items=[],
-            correction_summary="All citations and indicator values passed the local deterministic verification pass.",
+            correction_summary=self._verification_summary(run),
         )
         run.verification_pack = pack
         run.verified_allowlist = allowlist
@@ -395,19 +391,13 @@ class AgentSuite:
         qa_notes: list[str] = []
         lower_bound = int(run.target_word_count * 0.90)
         upper_bound = int(run.target_word_count * 1.10)
+        limitations_body = self._limitations_body(run)
         if "## Limitations" not in revised:
-            revised += (
-                "\n\n## Limitations\nThis prototype runs in offline local-fixture mode and should be "
-                "connected to live evidence sources before policy use.\n"
-            )
+            revised += f"\n\n## Limitations\n{limitations_body}\n"
             qa_notes.append("Inserted missing limitations section.")
-        if "offline local-fixture mode" not in revised.lower():
-            revised = revised.replace(
-                "## Limitations\n",
-                "## Limitations\nThe current run uses offline local-fixture mode and therefore demonstrates workflow correctness rather than live policy evidence.\n",
-                1,
-            )
-            qa_notes.append("Added explicit local-fixture caveat.")
+        if not self._has_provenance_disclosure(revised):
+            revised = self._replace_limitations_body(revised, limitations_body)
+            qa_notes.append("Refreshed limitations section with provenance-aware caveat.")
         current_words = word_count(revised)
         if current_words < lower_bound:
             shortage = lower_bound - current_words + 50
@@ -585,15 +575,15 @@ class AgentSuite:
         sections.append(
             "## Indicator and Data Summary\n"
             f"The indicator basket is organized around {profile.dimension_label.lower()} with emphasis on "
-            f"{', '.join(profile.indicator_dimensions[:4]).lower()}. The table below shows the latest local-fixture "
-            "readings used in this prototype run.\n\n"
+            f"{', '.join(profile.indicator_dimensions[:4]).lower()}. "
+            f"{self._indicator_data_summary_intro(run.indicator_pack)}\n\n"
             + render_markdown_table(indicator_rows, ["Indicator", "Latest", "Prior", "Delta", "Dimension"])
         )
         sections.append(
             "## Methodology\n"
             f"{run.planner_output.analytical_method} The workflow uses a local LLM runtime "
             f"({self.local_llm.runtime_label()}) for planning and narrative synthesis, while numeric outputs come from a "
-            "deterministic composite-indicator layer so the prototype remains testable and reproducible offline."
+            f"deterministic composite-indicator layer {self._methodology_provenance_clause(run.indicator_pack)}."
         )
         findings_intro_fallback = (
             f"The assessment points to stronger support from {leading_dimension.lower()} than from the rest of the "
@@ -659,8 +649,7 @@ class AgentSuite:
         )
         sections.append(
             "## Limitations\n"
-            "This prototype uses a deterministic offline local-fixture adapter for both literature and indicator retrieval. "
-            "It demonstrates workflow correctness, local-LLM integration, and auditability, but it should be connected to live sources and a validated domain model before policy deployment."
+            + self._limitations_body(run)
         )
         reference_lines = "\n\n".join(self._reference_entry_markdown(source) for source in run.source_registry)
         sections.append("## References\n" + reference_lines)
@@ -721,7 +710,7 @@ class AgentSuite:
             CriterionScore(
                 criterion_id=6,
                 criterion="Data Accuracy",
-                score=7.9 if "offline local-fixture mode" in report_text.lower() else 6.2,
+                score=7.9 if self._has_provenance_disclosure(report_text) else 6.2,
                 explanation="The report should explicitly state caveats, reference periods, and evidence provenance.",
             ),
             CriterionScore(
@@ -860,17 +849,23 @@ class AgentSuite:
                 "Indicator": indicator.label,
                 "Latest": f"{indicator.latest_value:.1f} {indicator.unit}",
                 "Period": indicator.reference_period,
+                "Mode": indicator.retrieval_mode,
+                "Status": indicator.retrieval_status,
+                "Connector": indicator.connector_id or "-",
                 "Source": indicator.primary_source_name,
             }
             for indicator in pack.indicators
         ]
-        return "# Data Collection\n" + render_markdown_table(rows, ["Indicator", "Latest", "Period", "Source"])
+        return "# Data Collection\n" + render_markdown_table(
+            rows,
+            ["Indicator", "Latest", "Period", "Mode", "Status", "Connector", "Source"],
+        )
 
     def _render_fact_check_markdown(self, pack: VerificationPack) -> str:
         lines = ["# Fact Check", pack.correction_summary, "", "## Verification Items"]
         for item in pack.verification_items:
             lines.append(
-                f"- {item.item_type.upper()} {item.item_id}: {item.status} ({item.primary_source} vs {item.secondary_source})"
+                f"- {item.item_type.upper()} {item.item_id}: {item.status} ({item.primary_source} vs {item.secondary_source}) | {item.note}"
             )
         return "\n".join(lines)
 
@@ -948,6 +943,10 @@ class AgentSuite:
             "latest_value",
             "unit",
             "dimension",
+            "retrieval_mode",
+            "retrieval_status",
+            "connector_id",
+            "retrieved_at",
             "primary_source_url",
             "verification_source_url",
         ]
@@ -961,6 +960,10 @@ class AgentSuite:
                     item.latest_value,
                     item.unit,
                     item.sector_bucket,
+                    item.retrieval_mode,
+                    item.retrieval_status,
+                    item.connector_id or "",
+                    item.retrieved_at.isoformat(),
                     item.primary_source_url,
                     item.verification_source_url,
                 ]
@@ -1058,8 +1061,8 @@ class AgentSuite:
                     "The monitoring note should distinguish between a genuine policy signal and a temporary statistical artifact. "
                     "That means recording the release date, source URL, comparison base, revision history, and whether an "
                     "independent verification source confirms the movement. For a prototype run like this one, the team should "
-                    "also note where the workflow is still using local fixtures so that a later production connector can replace "
-                    "the placeholder evidence trail without changing the decision logic."
+                    "also record provenance metadata for each indicator, including whether the value was retrieved live or supplied through fixture fallback, "
+                    "so that later connectors can replace prototype evidence trails without changing the decision logic."
                 ),
             ]
         )
@@ -1243,6 +1246,100 @@ class AgentSuite:
         ):
             return fallback_text
         return generated_text
+
+    def _indicator_verification_note(self, indicator: IndicatorObservation) -> str:
+        if indicator.retrieval_status == "fallback":
+            connector = f" after {indicator.connector_id}" if indicator.connector_id else ""
+            return (
+                "Fixture fallback supplied this value"
+                f"{connector}; provenance metadata records the fallback and manual validation is still required before policy use."
+            )
+        if indicator.retrieval_mode == "live":
+            connector = f" via {indicator.connector_id}" if indicator.connector_id else ""
+            return (
+                "Live connector retrieved this value"
+                f"{connector}; provenance metadata is recorded, but manual validation is still required before policy use."
+            )
+        return "Deterministic fixture value recorded with provenance metadata for offline-safe validation."
+
+    def _verification_summary(self, run: SerializedRunState) -> str:
+        if not run.indicator_pack or not run.indicator_pack.indicators:
+            return "Verification completed, but no indicator observations were present in the current run."
+        pack = run.indicator_pack
+        fallback_count = sum(1 for item in pack.indicators if item.retrieval_status == "fallback")
+        if pack.retrieval_mode == "live":
+            return (
+                "Citations are recorded and indicator values were fetched through live connectors with provenance metadata. "
+                "Manual validation is still required before policy use."
+            )
+        if pack.retrieval_mode == "mixed":
+            return (
+                f"Citations are recorded and indicator values include live retrieval with {fallback_count} fixture-backed fallback case(s). "
+                "Fallback cases are explicit in provenance metadata and require manual review before policy use."
+            )
+        return "Citations are recorded and all indicator values used deterministic fixtures with local provenance checks."
+
+    def _indicator_data_summary_intro(self, pack: IndicatorPack | None) -> str:
+        if pack is None:
+            return "The table below shows the latest readings available for this prototype run."
+        if pack.retrieval_mode == "live":
+            return "The table below shows the latest readings retrieved through live connectors for this prototype run."
+        if pack.retrieval_mode == "mixed":
+            return (
+                "The table below shows the latest readings for this prototype run, combining live connector retrieval with fixture fallback where live collection did not complete."
+            )
+        return "The table below shows the latest fixture-backed readings used in this prototype run."
+
+    def _methodology_provenance_clause(self, pack: IndicatorPack | None) -> str:
+        if pack is None:
+            return "applied to the retrieved indicator dataset"
+        if pack.retrieval_mode == "live":
+            return "applied to live-retrieved indicator observations with explicit provenance metadata"
+        if pack.retrieval_mode == "mixed":
+            return "applied to a mixed dataset of live-retrieved and fixture-fallback indicator observations with explicit provenance metadata"
+        return "applied to fixture-backed observations so the prototype remains testable and reproducible offline"
+
+    def _limitations_body(self, run: SerializedRunState) -> str:
+        pack = run.indicator_pack
+        if pack is None:
+            return (
+                "This prototype requires explicit provenance metadata for indicator evidence. The current run should not be used for policy decisions until indicator retrieval has completed and the evidence trail is visible."
+            )
+        if pack.retrieval_mode == "live":
+            return (
+                "This run uses live indicator retrieval with explicit provenance metadata. Connector outputs still require manual validation against official releases before policy use, and literature evidence may still depend on offline or metadata-only fallbacks when full-text validation is unavailable."
+            )
+        if pack.retrieval_mode == "mixed":
+            fallback_count = sum(1 for item in pack.indicators if item.retrieval_status == "fallback")
+            return (
+                f"This run mixes live indicator retrieval with fixture fallback, and the provenance metadata records which indicators fell back ({fallback_count} case(s) in this run). Fallback-backed findings require manual review before policy use, and literature evidence may still depend on metadata-level validation."
+            )
+        return (
+            "This run uses deterministic fixture-backed indicator values with explicit provenance metadata. It demonstrates workflow correctness and offline reproducibility rather than live policy evidence, and live validation is still required before policy deployment."
+        )
+
+    def _has_provenance_disclosure(self, report_text: str) -> bool:
+        lowered = report_text.lower()
+        return "provenance" in lowered and any(
+            token in lowered
+            for token in (
+                "fixture-backed",
+                "live indicator retrieval",
+                "fixture fallback",
+                "live-retrieved",
+            )
+        )
+
+    def _replace_limitations_body(self, report_text: str, limitations_body: str) -> str:
+        marker = "## Limitations\n"
+        if marker not in report_text:
+            return report_text.rstrip() + f"\n\n{marker}{limitations_body}\n"
+        start = report_text.index(marker) + len(marker)
+        remainder = report_text[start:]
+        next_section = remainder.find("\n\n## ")
+        if next_section == -1:
+            return report_text[:start] + limitations_body + "\n"
+        return report_text[:start] + limitations_body + remainder[next_section:]
 
     def _agency_owners(self, profile, geography: str) -> dict[str, str]:
         geography_prefix = "" if geography == "the target geography" else f"{geography} "

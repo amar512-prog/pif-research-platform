@@ -113,6 +113,10 @@ class IndicatorObservation(BaseModel):
     verification_source_name: str
     verification_source_url: str
     notes: str = ""
+    retrieval_mode: Literal["fixture", "live"] = "fixture"
+    retrieval_status: Literal["fixture", "live", "fallback"] = "fixture"
+    connector_id: str | None = None
+    retrieved_at: datetime = Field(default_factory=utc_now)
 
 
 class VerificationItem(BaseModel):
@@ -154,7 +158,7 @@ class LiteraturePack(BaseModel):
 
 
 class IndicatorPack(BaseModel):
-    retrieval_mode: Literal["fixture", "live"] = "fixture"
+    retrieval_mode: Literal["fixture", "live", "mixed"] = "fixture"
     indicators: list[IndicatorObservation]
     metadata: dict[str, Any]
 

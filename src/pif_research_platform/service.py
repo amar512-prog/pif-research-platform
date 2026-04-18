@@ -6,6 +6,7 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from .adapters.indicator_values import build_indicator_value_collector
 from .adapters.local_llm import LocalLLMAdapter
 from .adapters.search import build_search_adapter
 from .agents import AgentSuite
@@ -35,6 +36,7 @@ class RunService:
             settings=settings,
             repo=self.repo,
             search_adapter=build_search_adapter(settings.search),
+            indicator_value_collector=build_indicator_value_collector(settings.indicator_data),
             local_llm=LocalLLMAdapter(settings.local_llm),
             strategy=GenericTopicAnalysisStrategy(),
             pdf_exporter=SimplePDFExporter(),

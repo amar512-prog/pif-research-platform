@@ -8,9 +8,8 @@ import xml.etree.ElementTree as ET
 import requests
 
 from ..config import SearchSettings
-from ..models import IndicatorObservation, IndicatorSpec, SourceRecord, TopicProfile
+from ..models import IndicatorSpec, SourceRecord, TopicProfile
 from ..topic_intelligence import (
-    build_indicator_observations,
     build_literature_sources,
     domain_config,
 )
@@ -352,14 +351,6 @@ class BaseSearchAdapter:
     ) -> list[IndicatorSpec]:
         raise NotImplementedError
 
-    def collect_indicator_values(
-        self,
-        topic: str,
-        topic_profile: TopicProfile,
-        indicator_plan: list[IndicatorSpec],
-    ) -> list[IndicatorObservation]:
-        raise NotImplementedError
-
 
 class OfflineSearchAdapter(BaseSearchAdapter):
     """Deterministic fixtures so the prototype runs without external credentials."""
@@ -374,18 +365,6 @@ class OfflineSearchAdapter(BaseSearchAdapter):
         indicator_plan: list[IndicatorSpec],
     ) -> list[IndicatorSpec]:
         return [_apply_indicator_source_hint(topic_profile, spec) for spec in indicator_plan]
-
-    def collect_indicator_values(
-        self,
-        topic: str,
-        topic_profile: TopicProfile,
-        indicator_plan: list[IndicatorSpec],
-    ) -> list[IndicatorObservation]:
-        observed = {
-            item.indicator_id: item
-            for item in build_indicator_observations(topic_profile, topic, indicator_plan)
-        }
-        return [observed[spec.indicator_id] for spec in indicator_plan if spec.indicator_id in observed]
 
 
 @dataclass(slots=True)
@@ -446,20 +425,6 @@ class CrossrefSearchAdapter(BaseSearchAdapter):
                 )
             )
         return resolved
-
-    def collect_indicator_values(
-        self,
-        topic: str,
-        topic_profile: TopicProfile,
-        indicator_plan: list[IndicatorSpec],
-    ) -> list[IndicatorObservation]:
-        if self.fallback is not None:
-            return self.fallback.collect_indicator_values(topic, topic_profile, indicator_plan)
-        observed = {
-            item.indicator_id: item
-            for item in build_indicator_observations(topic_profile, topic, indicator_plan)
-        }
-        return [observed[spec.indicator_id] for spec in indicator_plan if spec.indicator_id in observed]
 
     def _candidate_queries(self, topic: str, topic_profile: TopicProfile) -> list[str]:
         geography = topic_profile.geography or ""
